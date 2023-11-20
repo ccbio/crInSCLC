@@ -1,0 +1,148 @@
+library(stringr)
+library(stringr)
+library(dplyr)
+library(limma)
+mRNA1=read.table('mRNA.txt',header = T)
+mRNA2=log2(mRNA1+1)
+mRNA3=avereps(mRNA2)
+TQEC <- normalizeBetweenArrays(mRNA3)
+#Pairing
+pairinfo = factor(rep(1:11,2))
+group <-c(rep("pre",11),rep("pro",11))
+group <- factor(group,levels = c("pre","pro"),ordered = F)
+design <- model.matrix(~group+pairinfo)
+fit <- lmFit(TQEC,design)
+fit2 <- eBayes(fit)
+allDiff=topTable(fit2,adjust='fdr',coef=2,number=Inf ) 
+#non-Pairing
+modType=c(rep("pre",17),rep("pro",17))
+design <- model.matrix(~0+factor(modType))
+colnames(design) <- c("pre","pro")
+fit <- lmFit(TQEC,design)
+cont.matrix<-makeContrasts(pro-pre,levels=design)
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2)
+allDiff=topTable(fit2,adjust='fdr',coef=2,number=Inf ) 
+
+logFoldChange=0.3
+P.value=0.05
+diffSig <- allDiff[with(allDiff, (abs(logFC)>logFoldChange & P.Value< P.value)), ]
+write.table(diffSig,file="治疗前后_0.3.xls",sep="\t",quote=F)
+
+
+#xCell
+devtools::install_github('dviraran/xCell')
+library(xCell)
+tscores <- xCellAnalysis(mRNA,rnaseq = F,scale = TRUE, alpha = 0.5, 
+                         parallel.sz = 4, parallel.type = "SOCK")
+
+#WGCNA
+dataExpr=t(mat)
+library(WGCNA)
+sampleTree = hclust(dist(dataExpr), method = "average")
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="")
+powers = c(c(1:10), seq(from = 12, to=30, by=2))
+corType = "pearson"
+type = "unsigned"
+sft = pickSoftThreshold(dataExpr, powerVector=powers,
+                        networkType=type, verbose=5)
+
+maxPOutliers = ifelse(corType=="pearson",1,0.05)
+exprMat <- "coda_limma0.5_op95_exp.txt"
+nGenes = ncol(dataExpr)
+nSamples = nrow(dataExpr)
+par(mfrow = c(1,2))
+cex1 = 0.9
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",
+     ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"))
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red")
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers,
+     cex=cex1, col="red")
+power = sft$powerEstimate
+if(is.na(power)){
+  type = "unsigned"
+  nSamples=nrow(dataExpr)
+  power = ifelse(nSamples<20, ifelse(type == "unsigned", 9, 18),
+                 ifelse(nSamples<30, ifelse(type == "unsigned", 8, 16),
+                        ifelse(nSamples<40, ifelse(type == "unsigned", 7, 14),
+                               ifelse(type == "unsigned", 6, 12))      
+                 )
+  )
+}
+net = blockwiseModules(dataExpr, power = power, maxBlockSize = nGenes,
+                       TOMType = type, minModuleSize = 30,
+                       reassignThreshold = 0, mergeCutHeight = 0.25,
+                       numericLabels = TRUE, pamRespectsDendro = FALSE,
+                       saveTOMs=TRUE, corType = corType,
+                       maxPOutliers=maxPOutliers, loadTOMs=TRUE,
+                       saveTOMFileBase = paste0(exprMat, ".tom"),
+                       verbose = 3)
+table(net$colors)
+moduleLabels = net$colors
+moduleColors = labels2colors(moduleLabels)
+plotDendroAndColors(net$dendrograms[[1]], moduleColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+probes = colnames(dataExpr)
+load(net$TOMFiles[1], verbose=T)
+table(net$colors)
+moduleLabels = net$colors
+moduleColors = labels2colors(moduleLabels)
+plotDendroAndColors(net$dendrograms[[1]], moduleColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+probes = colnames(dataExpr)
+load(net$TOMFiles[1], verbose=T)
+TOM <- as.matrix(TOM)
+
+dissTOM = 1-TOM
+plotTOM = dissTOM^7
+diag(plotTOM) = NA
+
+TOMplot(plotTOM, net$dendrograms, moduleColors,
+        main = "Network heatmap plot, all genes")
+probes = colnames(dataExpr)
+dimnames(TOM) <- list(probes, probes)
+cyt1 = exportNetworkToCytoscape(TOM,
+                                edgeFile = paste(exprMat, ".edges_1.txt", sep=""),
+                                nodeFile = paste(exprMat, ".nodes_1.txt", sep=""),
+                                weighted = TRUE, threshold = 0.01,
+                                nodeNames = probes, nodeAttr = moduleColors)
+
+
+
+
+
+#mst
+data_coal=cyt1[["edgeData"]]
+write.table(data_coal, file = 'deq_ALec_exp_yuan.txt',quote=F,sep="\t",row.names = F) 
+filter_edge <- data.frame()
+for (var in unique(data_coal$fromNode)) {
+  
+  data <- data_coal[which(data_coal$fromNode == var),]
+  data <- data[order(data$weight,decreasing = TRUE),]
+  if(nrow(data) > 2){
+    filter <- data[1:ceiling(nrow(data)*0.3+0.5),]
+    filter_edge <- rbind(filter_edge, filter)
+    
+  }else{
+    filter_edge <- rbind(filter_edge, data)
+  }
+}
+write.table(filter_edge,file = 'filter_ALec_dqe_exp_wangluo.txt',sep="\t")
+library(igraph)
+# BiocManager::install('igraph')
+g=graph_from_data_frame(d=filter_edge[,1:2],directed=F)
+g=mst(g)
+V(g)
+
+write_graph(g, "filter_ALec_dqe_exp_mst.graphml", "graphml")
+
